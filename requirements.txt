@@ -1,0 +1,16 @@
+# PyTorch — install FIRST with your CUDA version, e.g.:
+#   pip install torch --index-url https://download.pytorch.org/whl/cu121
+# Or CPU-only (slow):
+#   pip install torch --index-url https://download.pytorch.org/whl/cpu
+
+truststore
+torchaudio
+nemo_toolkit[asr]
+transformers
+accelerate
+imageio-ffmpeg
+sounddevice
+soundfile
+numpy
+pyperclip
+keyboard
