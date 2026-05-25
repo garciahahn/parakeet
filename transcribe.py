@@ -474,7 +474,7 @@ def transcribe_file(
             for p in tmp_paths:
                 os.unlink(p)
 
-        text = " ".join(all_texts)
+        text = "\n\n".join(all_texts)
     else:
         print(f"  ⏳ Transcribing {os.path.basename(audio_path)}…", end=" ", flush=True)
         texts = run_transcription([audio_path], lang=lang)
