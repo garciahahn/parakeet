@@ -170,6 +170,30 @@ def load_model(model_key: str = DEFAULT_MODEL):
     print("  ✅ Model ready.\n")
 
 
+# Formats that libsndfile / NeMo can read natively without ffmpeg.
+_NEMO_NATIVE_FORMATS = {".wav", ".flac", ".ogg"}
+
+
+def _ensure_nemo_compatible(audio_paths: list[str]) -> tuple[list[str], list[str]]:
+    """Convert non-native audio files to temp WAVs so NeMo never invokes torchaudio/ffmpeg.
+
+    Returns (paths_for_nemo, temp_files_to_cleanup).
+    """
+    out_paths: list[str] = []
+    tmp_files: list[str] = []
+    for p in audio_paths:
+        if Path(p).suffix.lower() in _NEMO_NATIVE_FORMATS:
+            out_paths.append(p)
+        else:
+            pcm = _decode_audio(p, target_sr=SAMPLE_RATE)
+            tmp = tempfile.NamedTemporaryFile(suffix=".wav", delete=False)
+            sf.write(tmp.name, pcm, SAMPLE_RATE)
+            tmp.close()
+            out_paths.append(tmp.name)
+            tmp_files.append(tmp.name)
+    return out_paths, tmp_files
+
+
 def run_transcription(audio_paths: list[str], lang: str | None = None) -> list[str]:
     """Run inference on audio files. Backend-aware."""
     backend = _active_backend()
@@ -193,13 +217,19 @@ def run_transcription(audio_paths: list[str], lang: str | None = None) -> list[s
             texts.append(out["text"].strip() if isinstance(out, dict) else str(out))
         return texts
 
-    # NeMo backend (parakeet / canary)
-    if _active_model_key == "canary" and lang:
-        override_cfg = {"source_lang": lang, "target_lang": lang}
-        results = model.transcribe(audio_paths, override_config=override_cfg)
-    else:
-        results = model.transcribe(audio_paths)
-    return [r.text if hasattr(r, "text") else str(r) for r in results]
+    # NeMo backend (parakeet / canary) — pre-convert non-native formats to WAV
+    # so NeMo/lhotse never tries to use torchaudio's ffmpeg bindings.
+    safe_paths, tmp_files = _ensure_nemo_compatible(audio_paths)
+    try:
+        if _active_model_key == "canary" and lang:
+            override_cfg = {"source_lang": lang, "target_lang": lang}
+            results = model.transcribe(safe_paths, override_config=override_cfg)
+        else:
+            results = model.transcribe(safe_paths)
+        return [r.text if hasattr(r, "text") else str(r) for r in results]
+    finally:
+        for f in tmp_files:
+            os.unlink(f)
 
 
 # ─── VAD chunking (silero-vad) ──────────────────────────────────────────────────
@@ -234,23 +264,26 @@ def chunk_audio(
     """
     load_vad_model()
 
-    wav, sr = sf.read(audio_path, dtype="float32")
-    # Convert to mono if needed
-    if wav.ndim > 1:
-        wav = wav.mean(axis=1)
-    # Resample to 16 kHz if needed
-    if sr != SAMPLE_RATE:
-        import torchaudio
-        wav_t = torch.from_numpy(wav).unsqueeze(0)
-        wav_t = torchaudio.transforms.Resample(sr, SAMPLE_RATE)(wav_t)
-        wav = wav_t.squeeze().numpy()
-        sr = SAMPLE_RATE
+    ext = Path(audio_path).suffix.lower()
+    if ext in _NEMO_NATIVE_FORMATS:
+        wav, sr = sf.read(audio_path, dtype="float32")
+        if wav.ndim > 1:
+            wav = wav.mean(axis=1)
+        # Resample to 16 kHz if needed
+        if sr != SAMPLE_RATE:
+            import torchaudio
+            wav_t = torch.from_numpy(wav).unsqueeze(0)
+            wav_t = torchaudio.transforms.Resample(sr, SAMPLE_RATE)(wav_t)
+            wav = wav_t.squeeze().numpy()
+    else:
+        # Decode compressed formats (m4a, mp3, etc.) via ffmpeg
+        wav = _decode_audio(audio_path, target_sr=SAMPLE_RATE)
 
     wav_tensor = torch.from_numpy(wav)
 
     speech_ts = _get_speech_timestamps(
         wav_tensor, _vad_model,
-        sampling_rate=sr,
+        sampling_rate=SAMPLE_RATE,
         min_silence_duration_ms=min_silence_ms,
     )
 
@@ -259,7 +292,7 @@ def chunk_audio(
         return [audio_path]
 
     # Merge segments that are close together to avoid splitting mid-sentence
-    merge_gap = int(sr * padding_ms / 1000)
+    merge_gap = int(SAMPLE_RATE * padding_ms / 1000)
     merged: list[dict] = [speech_ts[0]]
     for seg in speech_ts[1:]:
         if seg["start"] - merged[-1]["end"] <= merge_gap:
@@ -268,7 +301,7 @@ def chunk_audio(
             merged.append(seg)
 
     # Pad each segment slightly so words at edges aren't clipped
-    pad_samples = int(sr * padding_ms / 1000)
+    pad_samples = int(SAMPLE_RATE * padding_ms / 1000)
     total_samples = len(wav)
     chunk_paths: list[str] = []
     for i, seg in enumerate(merged):
@@ -276,7 +309,7 @@ def chunk_audio(
         end = min(total_samples, seg["end"] + pad_samples)
         chunk = wav[start:end]
         tmp = tempfile.NamedTemporaryFile(suffix=f"_chunk{i}.wav", delete=False)
-        sf.write(tmp.name, chunk, sr)
+        sf.write(tmp.name, chunk, SAMPLE_RATE)
         tmp.close()
         chunk_paths.append(tmp.name)
 
