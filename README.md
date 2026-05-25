@@ -200,6 +200,7 @@ python transcribe.py file --help
 | Problem | Fix |
 |---|---|
 | `ModuleNotFoundError: No module named 'torch'` | Install PyTorch first — see step 3 above. |
+| torchaudio can't find ffmpeg / `avcodec` DLLs | Run `pip install av` — it bundles ffmpeg libs directly, no system install needed. |
 | Model download fails behind a proxy | `pip install truststore` — it's already in `requirements.txt` and auto-patches SSL. |
 | `sounddevice` import error on Linux | Install PortAudio: `sudo apt install libportaudio2` |
 | Hotkeys don't work on Linux/macOS | The `keyboard` library requires root: `sudo python transcribe.py` |

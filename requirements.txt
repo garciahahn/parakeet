@@ -5,6 +5,7 @@
 
 truststore
 torchaudio
+av
 nemo_toolkit[asr]
 transformers
 accelerate
